@@ -4,11 +4,18 @@ import torchvision.transforms as transforms
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from sklearn.metrics import precision_score, recall_score
+import numpy as np
+import time
 
-# Convert images to tensors
+# -------------------------
+# DATA TRANSFORM
+# -------------------------
 transform = transforms.Compose([transforms.ToTensor()])
 
-# Load training dataset
+# -------------------------
+# LOAD TRAIN DATASET
+# -------------------------
 trainset = torchvision.datasets.MNIST(
     root='./data',
     train=True,
@@ -22,6 +29,9 @@ trainloader = torch.utils.data.DataLoader(
     shuffle=True
 )
 
+# -------------------------
+# TEACHER NETWORK
+# -------------------------
 class TeacherNet(nn.Module):
     def __init__(self):
         super(TeacherNet, self).__init__()
@@ -36,8 +46,9 @@ class TeacherNet(nn.Module):
 
 teacher_model = TeacherNet()
 
-
-
+# -------------------------
+# STUDENT NETWORK
+# -------------------------
 class StudentNet(nn.Module):
     def __init__(self):
         super(StudentNet, self).__init__()
@@ -62,13 +73,9 @@ for epoch in range(3):
     for images, labels in trainloader:
 
         optimizer_teacher.zero_grad()
-
         outputs = teacher_model(images)
-
         loss = criterion(outputs, labels)
-
         loss.backward()
-
         optimizer_teacher.step()
 
     print(f"Teacher Epoch {epoch+1} complete")
@@ -76,10 +83,9 @@ for epoch in range(3):
 print("Teacher training finished")
 
 # -------------------------
-# DISTILLATION TRAINING
+# KNOWLEDGE DISTILLATION
 # -------------------------
 optimizer_student = optim.Adam(student_model.parameters(), lr=0.001)
-
 temperature = 3.0
 
 for epoch in range(3):
@@ -87,14 +93,11 @@ for epoch in range(3):
 
         optimizer_student.zero_grad()
 
-        # Teacher predictions
         with torch.no_grad():
             teacher_outputs = teacher_model(images)
 
-        # Student predictions
         student_outputs = student_model(images)
 
-        # Soft targets
         soft_teacher = F.softmax(teacher_outputs / temperature, dim=1)
         soft_student = F.log_softmax(student_outputs / temperature, dim=1)
 
@@ -124,33 +127,74 @@ testloader = torch.utils.data.DataLoader(
 )
 
 # -------------------------
-# TEST STUDENT ACCURACY
+# EVALUATION FUNCTION
 # -------------------------
-correct = 0
-total = 0
+def evaluate_model(model):
 
-with torch.no_grad():
-    for images, labels in testloader:
+    model.eval()
 
-        outputs = student_model(images)
-        _, predicted = torch.max(outputs.data, 1)
+    all_preds = []
+    all_labels = []
+    inference_times = []
 
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
+    with torch.no_grad():
+        for images, labels in testloader:
 
-student_accuracy = 100 * correct / total
+            start = time.time()
 
-print("Student Model Accuracy:", student_accuracy, "%")
+            outputs = model(images)
 
-# Count parameters in teacher model
+            end = time.time()
+
+            _, predicted = torch.max(outputs, 1)
+
+            inference_times.append(end - start)
+
+            all_preds.extend(predicted.numpy())
+            all_labels.extend(labels.numpy())
+
+    accuracy = 100 * sum([p == l for p, l in zip(all_preds, all_labels)]) / len(all_labels)
+
+    precision = precision_score(all_labels, all_preds, average="macro")
+    recall = recall_score(all_labels, all_preds, average="macro")
+
+    avg_time = np.mean(inference_times)
+    std_time = np.std(inference_times)
+
+    return accuracy, precision, recall, avg_time, std_time
+
+
+# -------------------------
+# EVALUATE BOTH MODELS
+# -------------------------
+teacher_accuracy, teacher_precision, teacher_recall, teacher_avg, teacher_std = evaluate_model(teacher_model)
+
+student_accuracy, student_precision, student_recall, student_avg, student_std = evaluate_model(student_model)
+
+# -------------------------
+# PARAMETER COUNT
+# -------------------------
 teacher_params = sum(p.numel() for p in teacher_model.parameters())
-
-# Count parameters in student model
 student_params = sum(p.numel() for p in student_model.parameters())
 
-print("Teacher parameters:", teacher_params)
-print("Student parameters:", student_params)
+# -------------------------
+# PRINT RESULTS
+# -------------------------
 
+print("\n========== TEACHER MODEL ==========")
+print("Parameters:", teacher_params)
+print("Accuracy:", teacher_accuracy)
+print("Macro Precision:", teacher_precision)
+print("Macro Recall:", teacher_recall)
+print("Average inference time:", teacher_avg)
+print("Average + std:", teacher_avg + teacher_std)
+print("Average - std:", teacher_avg - teacher_std)
 
-
-
+print("\n========== STUDENT MODEL ==========")
+print("Parameters:", student_params)
+print("Accuracy:", student_accuracy)
+print("Macro Precision:", student_precision)
+print("Macro Recall:", student_recall)
+print("Average inference time:", student_avg)
+print("Average + std:", student_avg + student_std)
+print("Average - std:", student_avg - student_std)
